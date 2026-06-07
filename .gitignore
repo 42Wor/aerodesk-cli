@@ -5,6 +5,7 @@
 *.gif
 *.pkg
 
+
 # Ignore temporary folders
 temp_extracted/
 1
