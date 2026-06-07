@@ -45,7 +45,7 @@ func main() {
 		fmt.Printf("%s=== AeroDesk Workspace Manager (CLI) ===%s\n", ColorCyan, ColorReset)
 		fmt.Println("Usage:")
 		fmt.Println("  aerodesk list            - List all wallpapers registered on the database")
-		fmt.Println("  aerodesk apply <id>      - Download and apply wallpaper by unique ID")
+		fmt.Println("  aerodesk apply <id>      - Download and apply wallpaper by unique ID (or '0' to disable)")
 		fmt.Println("  aerodesk status          - Display active wallpaper details and cache parameters")
 		fmt.Println("  aerodesk clean [--all]   - Remove cached files older than 90 days (or force clean all)")
 		fmt.Println("\nOptions:")
@@ -69,7 +69,7 @@ func main() {
 		handleList()
 	case "apply":
 		if len(args) < 2 {
-			logError("Please specify a wallpaper ID. Example: aerodesk apply 4fa0a7d")
+			logError("Please specify a wallpaper ID. Example: aerodesk apply 4fa0a7d (or '0' to disable)")
 			os.Exit(1)
 		}
 		handleApply(args[1])
@@ -121,6 +121,12 @@ func handleList() {
 }
 
 func handleApply(id string) {
+	// Fallback/Disable Switch (Option 0)
+	if id == "0" {
+		handleDisable()
+		return
+	}
+
 	db, err := fetchDatabase()
 	if err != nil {
 		logError(fmt.Sprintf("Failed to reach registry database: %v", err))
@@ -176,6 +182,55 @@ func handleApply(id string) {
 	applyWallpaperOS(localPath)
 }
 
+func handleDisable() {
+	logInfo("Initiating fallback sequence. Disabling AeroDesk workspace engine...")
+
+	// Kill active video engines
+	if runtime.GOOS == "linux" {
+		_ = exec.Command("killall", "mpvpaper").Run()
+		time.Sleep(200 * time.Millisecond)
+
+		home, err := os.UserHomeDir()
+		if err == nil {
+			hyprConfig := filepath.Join(home, ".config/hypr/hyprland.conf")
+			backupConfig := filepath.Join(home, ".config/hypr/hyprland.conf.bak")
+
+			// Restore original backup if present
+			if _, err := os.Stat(backupConfig); err == nil {
+				_ = os.Remove(hyprConfig)
+				err = os.Rename(backupConfig, hyprConfig)
+				if err == nil {
+					logSuccess("Original hyprland.conf configuration restored from backup.")
+				} else {
+					logError(fmt.Sprintf("Failed to restore backup: %v", err))
+				}
+			} else {
+				// Fallback to sanitizing lines manually
+				content, err := os.ReadFile(hyprConfig)
+				if err == nil {
+					lines := strings.Split(string(content), "\n")
+					var updatedLines []string
+					for _, line := range lines {
+						trimmed := strings.TrimSpace(line)
+						if !strings.Contains(trimmed, "mpvpaper") && !strings.Contains(trimmed, "current_wallpaper") && !strings.Contains(trimmed, "# Dynamic Live Wallpaper Manager") {
+							updatedLines = append(updatedLines, line)
+						}
+					}
+					_ = os.WriteFile(hyprConfig, []byte(strings.Join(updatedLines, "\n")), 0644)
+					logSuccess("AeroDesk configurations removed from hyprland.conf.")
+				}
+			}
+		}
+	} else if runtime.GOOS == "windows" {
+		// Restore default solid background on Windows
+		psCommand := `Add-Type -TypeDefinition "using System; using System.Runtime.InteropServices; public class Wallpaper { [DllImport(\"user32.dll\", CharSet=CharSet.Auto)] public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni); }"; [Wallpaper]::SystemParametersInfo(20, 0, \"\", 3)`
+		_ = exec.Command("powershell", "-Command", psCommand).Run()
+		logSuccess("AeroDesk bypassed. Windows background restored.")
+	}
+
+	logSuccess("AeroDesk successfully deactivated. Original system background is restored!")
+}
+
 func applyWallpaperOS(localPath string) {
 	switch runtime.GOOS {
 	case "linux":
@@ -193,7 +248,6 @@ func applyWallpaperOS(localPath string) {
 		}
 	case "windows":
 		logInfo("Applying background on Windows...")
-		// Change wallpaper via win32 SystemParametersInfo function run inside PowerShell
 		psCommand := fmt.Sprintf(`Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Wallpaper { [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni); }'; [Wallpaper]::SystemParametersInfo(20, 0, '%s', 3)`, localPath)
 		cmd := exec.Command("powershell", "-Command", psCommand)
 		if err := cmd.Run(); err != nil {
@@ -374,6 +428,13 @@ func configureHyprlandAutostart(symlinkPath string) {
 		return
 	}
 
+	backupConfig := filepath.Join(home, ".config/hypr/hyprland.conf.bak")
+	// Safely backup original configuration once
+	if _, err := os.Stat(backupConfig); os.IsNotExist(err) {
+		_ = copyFile(hyprConfig, backupConfig)
+		logSuccess("Created backup copy of original configuration at hyprland.conf.bak")
+	}
+
 	content, err := os.ReadFile(hyprConfig)
 	if err != nil {
 		return
@@ -450,6 +511,23 @@ func getAgeStatus(days int) string {
 		return fmt.Sprintf("%s[EXPIRED Cache - Clean Recommended]%s", ColorRed, ColorReset)
 	}
 	return fmt.Sprintf("%s[Active]%s", ColorGreen, ColorReset)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func logInfo(msg string)    { fmt.Printf("%s[*] %s%s\n", ColorBlue, msg, ColorReset) }
