@@ -16,7 +16,7 @@ import (
 
 // Brand and Configuration Constants
 const (
-	DefaultAPIURL = "https://wphub-xi.vercel.app"
+	DefaultAPIURL = "https://aerodesk-hub.vercel.app"
 	SymlinkName   = "current_wallpaper"
 	MaxCacheDays  = 90
 )
@@ -193,6 +193,7 @@ func applyWallpaperOS(localPath string) {
 		}
 	case "windows":
 		logInfo("Applying background on Windows...")
+		// Change wallpaper via win32 SystemParametersInfo function run inside PowerShell
 		psCommand := fmt.Sprintf(`Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Wallpaper { [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni); }'; [Wallpaper]::SystemParametersInfo(20, 0, '%s', 3)`, localPath)
 		cmd := exec.Command("powershell", "-Command", psCommand)
 		if err := cmd.Run(); err != nil {
@@ -433,7 +434,7 @@ func printBrandFooter() {
 	fmt.Printf("%s────────────────────────────────────────────────────────────────────────%s\n", ColorCyan, ColorReset)
 	fmt.Printf(" • %sMaazDB%s      - Embeddable high-performance database engine.\n", ColorBlue, ColorReset)
 	fmt.Printf(" • %sMellow Lab%s  - Exploratory research studio in cognitive machine learning.\n", ColorBlue, ColorReset)
-	fmt.Printf(" Visit the developer workspace at: %shttps://wphub-xi.vercel.app%s\n", ColorCyan, ColorReset)
+	fmt.Printf(" Visit the developer workspace at: %shttps://aerodesk-hub.vercel.app%s\n", ColorCyan, ColorReset)
 	fmt.Printf("%s────────────────────────────────────────────────────────────────────────%s\n", ColorCyan, ColorReset)
 	fmt.Println()
 }
