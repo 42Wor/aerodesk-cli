@@ -1,0 +1,13 @@
+# Ignore large binary files
+*.rar
+*.zip
+*.mp4
+*.gif
+*.pkg
+
+# Ignore temporary folders
+temp_extracted/
+1
+2
+3
+4
