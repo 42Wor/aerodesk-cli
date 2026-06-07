@@ -27,7 +27,7 @@ fi
 
 # Set up local wallpaper store
 WALLPAPER_STORE="$HOME/.local/share/backgrounds/live-wallpapers"
-SYMLINK_PATH="$WALLPAPER_STORE/current_wallpaper" # No extension needed, mpv reads file headers
+SYMLINK_PATH="$WALLPAPER_STORE/current_wallpaper"
 mkdir -p "$WALLPAPER_STORE"
 
 DIRS=()
@@ -35,7 +35,7 @@ DISPLAY_NAMES=()
 PLAYABLE=()
 VIDEO_PATHS=()
 
-# 1. Scan directories for ANY animated format
+# 1. Scan directories for any animated format
 for d in */; do
     clean_d="${d%/}"
     
@@ -57,7 +57,6 @@ for d in */; do
             PLAYABLE+=(0)
             VIDEO_PATHS+=("")
         else
-            # Show what format it is in the menu
             EXT="${VIDEO_PATH##*.}"
             DISPLAY_NAMES+=("$TITLE ${YELLOW}[${EXT^^}]${RESET}")
             PLAYABLE+=(1)
@@ -72,20 +71,43 @@ if [ ${#DIRS[@]} -eq 0 ]; then
     exit 1
 fi
 
-# 2. Present options
+# 2. Present options (including the new Option 0 Fallback)
 echo -e "${BLUE}Available Wallpapers:${RESET}"
 for i in "${!DIRS[@]}"; do
     echo -e "  [${GREEN}$((i+1))${RESET}] ${DISPLAY_NAMES[$i]}"
 done
+echo -e "  [${RED}0${RESET}] Disable Live Wallpaper (Restore Old Static Background)"
 
-echo -ne "\n${YELLOW}Select a wallpaper to set (1-${#DIRS[@]}): ${RESET}"
+echo -ne "\n${YELLOW}Select a wallpaper to set (0-${#DIRS[@]}): ${RESET}"
 read -r CHOICE
 
-if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "${#DIRS[@]}" ]; then
+if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 0 ] || [ "$CHOICE" -gt "${#DIRS[@]}" ]; then
     echo -e "${RED}[!] Invalid choice.${RESET}"
     exit 1
 fi
 
+HYPR_CONFIG="$HOME/.config/hypr/hyprland.conf"
+
+# === FALLBACK / DISABLE OPTION ===
+if [ "$CHOICE" -eq 0 ]; then
+    echo -e "${YELLOW}[*] Disabling live wallpaper...${RESET}"
+    if pgrep mpvpaper > /dev/null; then
+        killall mpvpaper
+        sleep 0.5
+    fi
+    
+    # Clean up the autostart line from hyprland.conf so it boots normally
+    if [ -f "$HYPR_CONFIG" ]; then
+        sed -i '/mpvpaper/d' "$HYPR_CONFIG"
+        sed -i '/# Dynamic Live Wallpaper Manager/d' "$HYPR_CONFIG"
+        echo -e "${GREEN}[+] Removed autostart configuration from hyprland.conf.${RESET}"
+    fi
+    
+    echo -e "${GREEN}[✔] Live wallpaper turned off. Your original static background is restored!${RESET}"
+    exit 0
+fi
+
+# === WALLPAPER SETTING OPTION ===
 SELECTED_INDEX=$((CHOICE-1))
 
 if [ "${PLAYABLE[$SELECTED_INDEX]}" -eq 0 ]; then
@@ -93,7 +115,7 @@ if [ "${PLAYABLE[$SELECTED_INDEX]}" -eq 0 ]; then
     exit 1
 fi
 
-# 3. Copy file and update symlink
+# Copy file and update symlink
 VIDEO_PATH="${VIDEO_PATHS[$SELECTED_INDEX]}"
 WALLPAPER_NAME=$(basename "$VIDEO_PATH")
 
@@ -102,29 +124,24 @@ ln -sf "$WALLPAPER_STORE/$WALLPAPER_NAME" "$SYMLINK_PATH"
 
 echo -e "${GREEN}[+] Wallpaper symlink updated to: $WALLPAPER_STORE/$WALLPAPER_NAME${RESET}"
 
-# 4. Monitor Detection & Hyprland config check
+# Monitor Detection
 MONITOR=$(hyprctl monitors | grep "Monitor" | awk '{print $2}' | head -n 1)
 [ -z "$MONITOR" ] && MONITOR="eDP-1"
 
-HYPR_CONFIG="$HOME/.config/hypr/hyprland.conf"
 AUTOSTART_LINE="exec-once = mpvpaper -o \"--loop-file=inf --no-audio --hwdec=auto\" $MONITOR $SYMLINK_PATH"
 
+# Clean old autostart lines to prevent duplicates, then append the fresh one
 if [ -f "$HYPR_CONFIG" ]; then
-    if grep -q "current_wallpaper" "$HYPR_CONFIG"; then
-        echo -e "${GREEN}[+] Hyprland is already configured to use the dynamic symlink.${RESET}"
-    else
-        # Clean up old .mp4 specific symlink if it exists from previous script versions
-        sed -i 's/current_wallpaper.mp4/current_wallpaper/g' "$HYPR_CONFIG" 2>/dev/null || true
-        
-        if ! grep -q "current_wallpaper" "$HYPR_CONFIG"; then
-            echo -e "${YELLOW}[*] Appending live wallpaper setup to hyprland.conf...${RESET}"
-            echo -e "\n# Dynamic Live Wallpaper Manager" >> "$HYPR_CONFIG"
-            echo "$AUTOSTART_LINE" >> "$HYPR_CONFIG"
-        fi
-    fi
+    sed -i '/mpvpaper/d' "$HYPR_CONFIG"
+    sed -i '/# Dynamic Live Wallpaper Manager/d' "$HYPR_CONFIG"
+    
+    echo -e "${YELLOW}[*] Updating autostart configuration in hyprland.conf...${RESET}"
+    echo -e "\n# Dynamic Live Wallpaper Manager" >> "$HYPR_CONFIG"
+    echo "$AUTOSTART_LINE" >> "$HYPR_CONFIG"
+    echo -e "${GREEN}[+] Hyprland configuration updated successfully!${RESET}"
 fi
 
-# 5. Apply live changes instantly
+# Apply live changes instantly
 if pgrep mpvpaper > /dev/null; then
     echo -e "${YELLOW}[*] Reloading mpvpaper...${RESET}"
     killall mpvpaper
