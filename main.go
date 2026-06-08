@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -40,20 +41,31 @@ type Wallpaper struct {
 
 type Database map[string]Wallpaper
 
+// Config structure stored inside getCacheDir()/config.json
+type Config struct {
+	Monitors []string `json:"monitors"` // "all" triggers dynamic auto-detection
+	MpvArgs  string   `json:"mpv_args"`
+}
+
 func main() {
 	flag.Usage = func() {
 		fmt.Printf("%s=== AeroDesk Workspace Manager (CLI) ===%s\n", ColorCyan, ColorReset)
 		fmt.Println("Usage:")
-		fmt.Println("  aerodesk list            - List all wallpapers registered on the database")
-		fmt.Println("  aerodesk apply <id>      - Download and apply wallpaper by unique ID (or '0' to disable)")
-		fmt.Println("  aerodesk status          - Display active wallpaper details and cache parameters")
-		fmt.Println("  aerodesk clean [--all]   - Remove cached files older than 90 days (or force clean all)")
+		fmt.Println("  aerodesk list                      - List all wallpapers registered on the database")
+		fmt.Println("  aerodesk apply <id>                - Download and apply wallpaper by unique ID (or '0' to disable)")
+		fmt.Println("  aerodesk status                    - Display active wallpaper details and cache parameters")
+		fmt.Println("  aerodesk clean [--all]             - Remove cached files older than 90 days (or force clean all)")
+		fmt.Println("  aerodesk monitors                  - List out all active system monitors detected")
+		fmt.Println("  aerodesk config                    - Launch interactive configuration wizard")
+		fmt.Println("  aerodesk config [--monitor=...] [--mpv-opts=...] - Update configuration programmatically via CLI flags")
 		fmt.Println("\nOptions:")
 		flag.PrintDefaults()
 		printBrandFooter()
 	}
 
 	allCleanFlag := flag.Bool("all", false, "Force delete all cached wallpaper files")
+	monitorFlag := flag.String("monitor", "", "Set comma-separated monitor names (e.g. 'eDP-1,DP-1' or 'all')")
+	mpvOptsFlag := flag.String("mpv-opts", "", "Set custom MPV options")
 	flag.Parse()
 
 	args := flag.Args()
@@ -77,6 +89,10 @@ func main() {
 		handleStatus()
 	case "clean":
 		handleClean(*allCleanFlag)
+	case "monitors":
+		handleMonitors()
+	case "config":
+		handleConfig(*monitorFlag, *mpvOptsFlag)
 	default:
 		logError(fmt.Sprintf("Command '%s' not recognized.", command))
 		flag.Usage()
@@ -179,7 +195,7 @@ func handleApply(id string) {
 	logSuccess(fmt.Sprintf("AeroDesk symlink updated to: %s", localPath))
 
 	// Cross-Platform Active Application Hook
-	applyWallpaperOS(localPath)
+	applyWallpaperOS(symlinkPath)
 }
 
 func handleDisable() {
@@ -295,7 +311,7 @@ func handleClean(forceAll bool) {
 
 	removedCount := 0
 	for _, file := range files {
-		if file.Name() == SymlinkName {
+		if file.Name() == SymlinkName || file.Name() == "config.json" {
 			continue
 		}
 
@@ -315,6 +331,167 @@ func handleClean(forceAll bool) {
 	}
 
 	logSuccess(fmt.Sprintf("Cleanup complete. Removed %d files from cache.", removedCount))
+}
+
+func handleMonitors() {
+	fmt.Printf("\n%s=== Active Monitor Layout List ===%s\n", ColorCyan, ColorReset)
+	monitors := getMonitors()
+	if len(monitors) == 1 && monitors[0] == "*" {
+		logWarning("No active Hyprland environment detected. Listing falls back to wildcards.")
+		fmt.Println("  [*] Wildcard (renders automatically on all outputs)")
+	} else {
+		for i, monitor := range monitors {
+			fmt.Printf("  [%d] %s\n", i+1, monitor)
+		}
+	}
+	printBrandFooter()
+}
+
+func handleConfig(monitorsOpt string, mpvOpts string) {
+	// If no arguments/flags are passed via the CLI, launch the interactive configuration wizard
+	if monitorsOpt == "" && mpvOpts == "" {
+		runConfigWizard()
+		return
+	}
+
+	cfg := loadConfig()
+	updated := false
+
+	if monitorsOpt != "" {
+		if monitorsOpt == "all" || monitorsOpt == "default" {
+			cfg.Monitors = []string{"all"}
+		} else {
+			parts := strings.Split(monitorsOpt, ",")
+			var cleanParts []string
+			for _, p := range parts {
+				trimmed := strings.TrimSpace(p)
+				if trimmed != "" {
+					cleanParts = append(cleanParts, trimmed)
+				}
+			}
+			cfg.Monitors = cleanParts
+		}
+		updated = true
+		logSuccess(fmt.Sprintf("Monitors updated in config: %v", cfg.Monitors))
+	}
+
+	if mpvOpts != "" {
+		cfg.MpvArgs = mpvOpts
+		updated = true
+		logSuccess(fmt.Sprintf("MPV arguments updated in config: %s", cfg.MpvArgs))
+	}
+
+	if updated {
+		if err := saveConfig(cfg); err != nil {
+			logError(fmt.Sprintf("Failed to save configuration settings: %v", err))
+		}
+	} else {
+		fmt.Printf("\n%s=== AeroDesk Engine Configurations ===%s\n", ColorCyan, ColorReset)
+		fmt.Printf("Configured Monitors : %s\n", strings.Join(cfg.Monitors, ", "))
+		fmt.Printf("MPV Arguments Flags : %s\n", cfg.MpvArgs)
+		fmt.Printf("Storage Location    : %s\n", filepath.Join(getCacheDir(), "config.json"))
+		printBrandFooter()
+	}
+}
+
+func runConfigWizard() {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\n%s=== AeroDesk Interactive Configuration Wizard ===%s\n", ColorCyan, ColorReset)
+
+	// Step 1: Monitor Choice Configuration
+	fmt.Printf("\n%s[Step 1/2] Monitor Configuration Selection%s\n", ColorBlue, ColorReset)
+	detected := getMonitors()
+	fmt.Println("Detected active monitors on your system:")
+	if len(detected) == 1 && detected[0] == "*" {
+		fmt.Println("  No active Hyprland monitors found. Using fallback '*' (renders on all displays).")
+	} else {
+		for i, m := range detected {
+			fmt.Printf("  [%d] %s\n", i+1, m)
+		}
+	}
+
+	fmt.Println("\nConfiguration Options:")
+	fmt.Println("  - Type 'all' to dynamically target all system screens at runtime.")
+	fmt.Println("  - Type specific monitor names separated by commas (e.g., 'eDP-1,DP-2').")
+	if !(len(detected) == 1 && detected[0] == "*") {
+		fmt.Println("  - Type the numbers of the monitors you want to target (e.g., '1' or '1,2').")
+	}
+
+	fmt.Print("\nYour selection [default: all]: ")
+	monInput, _ := reader.ReadString('\n')
+	monInput = strings.TrimSpace(monInput)
+
+	var selectedMonitors []string
+	if monInput == "" || strings.ToLower(monInput) == "all" {
+		selectedMonitors = []string{"all"}
+	} else {
+		parts := strings.Split(monInput, ",")
+		isNumericSelection := true
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			var num int
+			_, err := fmt.Sscanf(p, "%d", &num)
+			if err != nil || num < 1 || num > len(detected) {
+				isNumericSelection = false
+				break
+			}
+		}
+
+		if isNumericSelection && !(len(detected) == 1 && detected[0] == "*") {
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				var num int
+				_, _ = fmt.Sscanf(p, "%d", &num)
+				selectedMonitors = append(selectedMonitors, detected[num-1])
+			}
+		} else {
+			for _, p := range parts {
+				trimmed := strings.TrimSpace(p)
+				if trimmed != "" {
+					selectedMonitors = append(selectedMonitors, trimmed)
+				}
+			}
+		}
+	}
+
+	// Step 2: MPV Arguments/Optimization selection
+	fmt.Printf("\n%s[Step 2/2] Performance Profile Selection%s\n", ColorBlue, ColorReset)
+	fmt.Println("Choose an MPV background rendering performance profile:")
+	fmt.Println("  [1] Balanced (Default: hardware decoding enabled, silent, looped)")
+	fmt.Println("  [2] Low GPU Power (Optimized for battery, skips frames if slow, fast decode)")
+	fmt.Println("  [3] Custom (Manually enter your own preferred MPV flags)")
+
+	fmt.Print("\nYour selection [default: 1]: ")
+	profInput, _ := reader.ReadString('\n')
+	profInput = strings.TrimSpace(profInput)
+
+	selectedMpvArgs := "--loop-file=inf --no-audio --hwdec=auto"
+	switch profInput {
+	case "2":
+		selectedMpvArgs = "--loop-file=inf --no-audio --hwdec=auto --vd-lavc-fast --framedrop=vo"
+	case "3":
+		fmt.Print("Enter your custom MPV rendering arguments: ")
+		customArgs, _ := reader.ReadString('\n')
+		customArgs = strings.TrimSpace(customArgs)
+		if customArgs != "" {
+			selectedMpvArgs = customArgs
+		}
+	}
+
+	// Save configuration object
+	cfg := Config{
+		Monitors: selectedMonitors,
+		MpvArgs:  selectedMpvArgs,
+	}
+
+	if err := saveConfig(cfg); err != nil {
+		logError(fmt.Sprintf("Failed to write config file: %v", err))
+	} else {
+		fmt.Printf("\n%s[✔] Configuration successfully saved!%s\n", ColorGreen, ColorReset)
+		fmt.Printf("Target Monitors : %v\n", cfg.Monitors)
+		fmt.Printf("MPV Arguments   : %s\n", cfg.MpvArgs)
+	}
+	printBrandFooter()
 }
 
 // === FILE SYSTEM & API ENGINE ===
@@ -377,6 +554,82 @@ func downloadFile(url string, dest string) error {
 
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func loadConfig() Config {
+	cfgPath := filepath.Join(getCacheDir(), "config.json")
+	defaultConfig := Config{
+		Monitors: []string{"all"},
+		MpvArgs:  "--loop-file=inf --no-audio --hwdec=auto",
+	}
+
+	file, err := os.Open(cfgPath)
+	if err != nil {
+		return defaultConfig
+	}
+	defer file.Close()
+
+	var cfg Config
+	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
+		return defaultConfig
+	}
+	return cfg
+}
+
+func saveConfig(cfg Config) error {
+	cacheDir := getCacheDir()
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return err
+	}
+	cfgPath := filepath.Join(cacheDir, "config.json")
+	file, err := os.Create(cfgPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(cfg)
+}
+
+func getMonitors() []string {
+	var monitors []string
+
+	// Attempt structured JSON fetch from Hyprland
+	out, err := exec.Command("hyprctl", "monitors", "-j").Output()
+	if err == nil {
+		type HyprMonitor struct {
+			Name string `json:"name"`
+		}
+		var hyprMonitors []HyprMonitor
+		if err := json.Unmarshal(out, &hyprMonitors); err == nil {
+			for _, m := range hyprMonitors {
+				if m.Name != "" {
+					monitors = append(monitors, m.Name)
+				}
+			}
+		}
+	}
+
+	// Plain text grep/awk parsing fallback if JSON fails
+	if len(monitors) == 0 {
+		out, err := exec.Command("sh", "-c", "hyprctl monitors | grep 'Monitor' | awk '{print $2}'").Output()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" {
+					monitors = append(monitors, trimmed)
+				}
+			}
+		}
+	}
+
+	// Asterisk fallback (renders automatically on all active outputs if detection fails)
+	if len(monitors) == 0 {
+		monitors = []string{"*"}
+	}
+	return monitors
 }
 
 func ensureDependencies() {
@@ -450,16 +703,19 @@ func configureHyprlandAutostart(symlinkPath string) {
 		}
 	}
 
-	monitor := "eDP-1"
-	if out, err := exec.Command("sh", "-c", "hyprctl monitors | grep 'Monitor' | awk '{print $2}' | head -n 1").Output(); err == nil {
-		m := strings.TrimSpace(string(out))
-		if m != "" {
-			monitor = m
-		}
+	cfg := loadConfig()
+	var monitors []string
+	if len(cfg.Monitors) == 1 && cfg.Monitors[0] == "all" {
+		monitors = getMonitors()
+	} else {
+		monitors = cfg.Monitors
 	}
 
-	autostartLine := fmt.Sprintf("exec-once = mpvpaper -o \"--loop-file=inf --no-audio --hwdec=auto\" %s %s", monitor, symlinkPath)
-	updatedLines = append(updatedLines, "\n# Dynamic Live Wallpaper Manager", autostartLine)
+	updatedLines = append(updatedLines, "\n# Dynamic Live Wallpaper Manager")
+	for _, monitor := range monitors {
+		autostartLine := fmt.Sprintf("exec-once = mpvpaper -o %q %s %s", cfg.MpvArgs, monitor, symlinkPath)
+		updatedLines = append(updatedLines, autostartLine)
+	}
 
 	_ = os.WriteFile(hyprConfig, []byte(strings.Join(updatedLines, "\n")), 0644)
 	logSuccess("AeroDesk autostart configurations linked in hyprland.conf.")
@@ -469,21 +725,22 @@ func applyLiveWallpaper(symlinkPath string) {
 	_ = exec.Command("killall", "mpvpaper").Run()
 	time.Sleep(200 * time.Millisecond)
 
-	monitor := "eDP-1"
-	if out, err := exec.Command("sh", "-c", "hyprctl monitors | grep 'Monitor' | awk '{print $2}' | head -n 1").Output(); err == nil {
-		m := strings.TrimSpace(string(out))
-		if m != "" {
-			monitor = m
+	cfg := loadConfig()
+	var monitors []string
+	if len(cfg.Monitors) == 1 && cfg.Monitors[0] == "all" {
+		monitors = getMonitors()
+	} else {
+		monitors = cfg.Monitors
+	}
+
+	for _, monitor := range monitors {
+		cmd := exec.Command("mpvpaper", "-o", cfg.MpvArgs, monitor, symlinkPath)
+		if err := cmd.Start(); err != nil {
+			logError(fmt.Sprintf("Failed to spawn mpvpaper rendering thread on %s: %v", monitor, err))
+		} else {
+			logSuccess(fmt.Sprintf("AeroDesk live background applied to monitor: %s", monitor))
 		}
 	}
-
-	cmd := exec.Command("mpvpaper", "-o", "--loop-file=inf --no-audio --hwdec=auto", monitor, symlinkPath)
-	if err := cmd.Start(); err != nil {
-		logError(fmt.Sprintf("Failed to spawn mpvpaper rendering thread: %v", err))
-		return
-	}
-
-	logSuccess("AeroDesk live background applied.")
 }
 
 // === SYSTEM LOGGING & CROSS PROMOTIONS ===
